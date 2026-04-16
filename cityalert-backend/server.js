@@ -3,7 +3,10 @@ const express = require("express"); // creer un server avec express
 const mysql = require("mysql2"); // module pour se connecter à une base de données MySQL
 const bcrypt = require("bcrypt"); // module pour hasher les mots de passe avant de les stocker dans la DB pour des raisons de sécurité
 const multer = require('multer');
-require('dotenv').config(); //sert a stocker des variable sensibles dans un fichier .env et les charger dans process.env
+const fs = require('fs');
+require('dotenv').config();
+
+fs.mkdirSync('uploads', { recursive: true }); //sert a stocker des variable sensibles dans un fichier .env et les charger dans process.env
 const jwt = require("jsonwebtoken");
 
 
@@ -23,7 +26,7 @@ const app = express(); // creer le serveur express
   next();
 });*/
 app.use(cors({
-  origin: 'http://localhost:5174',
+  origin: 'http://localhost:5173', // Remplacez par l'URL de votre frontend
   methods: ['GET', 'POST', 'PUT', 'DELETE', "OPTIONS", "PATCH"],
   allowedHeaders: ['Content-Type', 'Authorization' ],
   preflightContinue: false,
@@ -68,11 +71,21 @@ const storage = multer.diskStorage({
     cb(null, 'uploads/');
   },
   filename: (req, file, cb) => {
-    cb(null, Date.now() + '-' + file.originalname);
+    const ext = file.originalname.split('.').pop();
+    cb(null, Date.now() + '-' + Math.round(Math.random() * 1e6) + '.' + ext);
   }
 });
 
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) {
+      return cb(new Error('Seules les images sont acceptées'));
+    }
+    cb(null, true);
+  }
+});
 
 app.get('/', (req, res) => { // definir une route pour la racine du serveur pour tester le serveur
   console.log("Received request to /");
@@ -161,9 +174,14 @@ app.get('/reports', (req, res) => {
   );
 });
 
-app.post('/reports', authMiddleware,upload.single('image'), (req, res) => {
+app.post('/reports', authMiddleware, (req, res, next) => {
+  upload.single('image')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, (req, res) => {
   const { title, description, latitude, longitude } = req.body;
-  const image_url = req.file ? req.file.filename : null;
+  const image_url = req.file ? req.file.filename : '';
   const user = jwt.decode(req.headers.authorization.split(' ')[1]); // decoder le token JWT pour recuperer l'id de l'utilisateur qui a fait la requete
   const user_id = user.userId; // utiliser l'id de l'utilisateur connecté
   
@@ -194,8 +212,8 @@ app.post('/reports', authMiddleware,upload.single('image'), (req, res) => {
       }
 
       else {
-        db.query('INSERT INTO reports (user_id, title, description, latitude, longitude, image_url, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [userId, title, description, latitude, longitude, image_url, 'user'],
+        db.query('INSERT INTO reports (user_id, title, description, latitude, longitude, image_url) VALUES (?, ?, ?, ?, ?, ?)',
+          [user_id, title, description, latitude, longitude, image_url],
           
           (err, results) => {
             if (err) {

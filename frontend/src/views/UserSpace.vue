@@ -1,8 +1,17 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { getReports, createReport } from '@/api/report'
+import { getMyReports, createReport } from '@/api/report'
+import { BASE_URL } from '@/api/index'
 import type { User } from '@/types/user'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
+import markerIcon from 'leaflet/dist/images/marker-icon.png'
+import markerShadow from 'leaflet/dist/images/marker-shadow.png'
+
+delete (L.Icon.Default.prototype as any)._getIconUrl
+L.Icon.Default.mergeOptions({ iconRetinaUrl: markerIcon2x, iconUrl: markerIcon, shadowUrl: markerShadow })
 
 const router = useRouter()
 const reports = ref<any[]>([])
@@ -17,7 +26,7 @@ onMounted(async () => {
 
   user.value = JSON.parse(localStorage.getItem('user') || 'null')
   
-  const data = await getReports()
+  const data = await getMyReports()
   if (!data.error) {
     reports.value = data
   }
@@ -30,34 +39,152 @@ function logout() {
 }
 
 const showModal = ref(false)
-const form = ref({ title: '', description: '', latitude: '', longitude: '', image_url: '' })
+const form = ref({ title: '', description: '', latitude: '', longitude: '' })
 const formError = ref('')
+
+// ── Localisation ──
+const locationMode = ref<'address' | 'map'>('address')
+const addressQuery = ref('')
+const addressLoading = ref(false)
+const addressResult = ref('')
+const addressError = ref('')
+
+async function searchAddress() {
+  if (!addressQuery.value.trim()) return
+  addressLoading.value = true
+  addressError.value = ''
+  addressResult.value = ''
+  try {
+    const q = encodeURIComponent(addressQuery.value + ', Villejuif, France')
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1&accept-language=fr`,
+      { headers: { 'User-Agent': 'CityAlert/1.0' } }
+    )
+    const data = await res.json()
+    if (data.length > 0) {
+      form.value.latitude  = parseFloat(data[0].lat).toFixed(6)
+      form.value.longitude = parseFloat(data[0].lon).toFixed(6)
+      addressResult.value  = data[0].display_name
+    } else {
+      addressError.value = 'Adresse introuvable, essayez avec plus de détails.'
+    }
+  } catch {
+    addressError.value = 'Erreur lors de la recherche d\'adresse.'
+  }
+  addressLoading.value = false
+}
+
+// ── Carte picker ──
+const mapPickerContainer = ref<HTMLElement | null>(null)
+let pickerMap: L.Map | null = null
+let pickerMarker: L.Marker | null = null
+const VILLEJUIF_BOUNDS = L.latLngBounds([48.775, 2.340], [48.810, 2.395])
+
+watch(locationMode, async (mode) => {
+  if (mode === 'map') {
+    await nextTick()
+    if (!mapPickerContainer.value || pickerMap) return
+    pickerMap = L.map(mapPickerContainer.value, {
+      maxBounds: VILLEJUIF_BOUNDS,
+      maxBoundsViscosity: 1.0,
+      minZoom: 13,
+      maxZoom: 19,
+    }).setView([48.7937, 2.3647], 14)
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+      maxZoom: 19,
+    }).addTo(pickerMap)
+    const lat = parseFloat(form.value.latitude)
+    const lng = parseFloat(form.value.longitude)
+    if (!isNaN(lat) && !isNaN(lng)) {
+      pickerMarker = L.marker([lat, lng]).addTo(pickerMap)
+      pickerMap.setView([lat, lng], 16)
+    }
+    pickerMap.on('click', (e: L.LeafletMouseEvent) => {
+      form.value.latitude  = e.latlng.lat.toFixed(6)
+      form.value.longitude = e.latlng.lng.toFixed(6)
+      if (pickerMarker) pickerMarker.setLatLng(e.latlng)
+      else pickerMarker = L.marker(e.latlng).addTo(pickerMap!)
+    })
+  } else {
+    pickerMap?.remove()
+    pickerMap = null
+    pickerMarker = null
+  }
+})
+
+function closeDrawer() {
+  showModal.value = false
+  locationMode.value = 'address'
+  addressQuery.value = ''
+  addressResult.value = ''
+  addressError.value = ''
+  pickerMap?.remove()
+  pickerMap = null
+  pickerMarker = null
+}
+const selectedFile = ref<File | null>(null)
+const imagePreview = ref<string | null>(null)
+const isDragging = ref(false)
+
+function setFile(file: File) {
+  if (!file.type.startsWith('image/')) return
+  if (imagePreview.value) URL.revokeObjectURL(imagePreview.value)
+  selectedFile.value = file
+  imagePreview.value = URL.createObjectURL(file)
+}
+
+function onDrop(e: DragEvent) {
+  isDragging.value = false
+  const file = e.dataTransfer?.files[0]
+  if (file) setFile(file)
+}
+
+function onFileChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (file) setFile(file)
+}
+
+function removeFile() {
+  if (imagePreview.value) URL.revokeObjectURL(imagePreview.value)
+  selectedFile.value = null
+  imagePreview.value = null
+}
+
+onUnmounted(() => {
+  if (imagePreview.value) URL.revokeObjectURL(imagePreview.value)
+})
+
+function imageUrl(filename: string) {
+  return filename ? `${BASE_URL}/uploads/${filename}` : null
+}
 
 async function submitReport() {
   formError.value = ''
-  console.log('Soumission du formulaire:', form.value)
 
   if (!form.value.title || !form.value.description) {
     formError.value = 'Titre et description obligatoires.'
     return
   }
 
-  const result = await createReport({
-    title: form.value.title,
-    description: form.value.description,
-    latitude: Number(form.value.latitude),
-    longitude: Number(form.value.longitude),
-    image_url: form.value.image_url
-  })
+  const formData = new FormData()
+  formData.append('title', form.value.title)
+  formData.append('description', form.value.description)
+  formData.append('latitude', form.value.latitude)
+  formData.append('longitude', form.value.longitude)
+  if (selectedFile.value) formData.append('image', selectedFile.value)
+
+  const result = await createReport(formData)
 
   if (result.error) {
     formError.value = result.error
-    console.log('Erreur lors de la création du signalement')
   } else {
-    console.log('Report créé avec succès:', result)
     showModal.value = false
-    form.value = { title: '', description: '', latitude: '', longitude: '', image_url: '' }
-    const data = await getReports()
+    form.value = { title: '', description: '', latitude: '', longitude: '' }
+    if (imagePreview.value) URL.revokeObjectURL(imagePreview.value)
+    selectedFile.value = null
+    imagePreview.value = null
+    const data = await getMyReports()
     if (!data.error) reports.value = data
   }
 }
@@ -140,7 +267,10 @@ async function submitReport() {
           </div>
 
           <div v-for="report in reports" :key="report.id" class="report-item">
-            <div class="report-icon muted">
+            <div v-if="report.image_url" class="report-thumbnail-wrap">
+              <img :src="imageUrl(report.image_url)!" class="report-thumbnail" :alt="report.title" />
+            </div>
+            <div v-else class="report-icon muted">
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
             </div>
             <div class="report-info">
@@ -155,47 +285,137 @@ async function submitReport() {
 
     </main>
 
-    <!-- Modal nouveau signalement -->
-    <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
-      <div class="modal">
-        <div class="modal-header">
-          <h3>Nouveau signalement</h3>
-          <button class="modal-close" @click="showModal = false">✕</button>
+    <!-- Drawer nouveau signalement -->
+    <Transition name="overlay">
+      <div v-if="showModal" class="drawer-overlay" @click.self="closeDrawer"></div>
+    </Transition>
+    <Transition name="drawer">
+      <div v-if="showModal" class="drawer">
+
+        <!-- En-tête -->
+        <div class="drawer-header">
+          <div>
+            <h3 class="drawer-title">Nouveau signalement</h3>
+            <p class="drawer-subtitle">Renseignez les informations du problème</p>
+          </div>
+          <button class="drawer-close" @click="closeDrawer">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
         </div>
 
-        <form @submit.prevent="submitReport" class="modal-form">
-          <div class="form-group">
-            <label>Titre</label>
-            <input v-model="form.title" type="text" placeholder="Ex: Nid de poule rue Pasteur" />
-          </div>
-          <div class="form-group">
-            <label>Description</label>
-            <textarea v-model="form.description" rows="3" placeholder="Décrivez le problème..."></textarea>
-          </div>
-          <div class="form-row">
+        <form @submit.prevent="submitReport" class="drawer-form">
+
+          <!-- Section 1 : Informations -->
+          <div class="drawer-section">
+            <h4 class="drawer-section-title">
+              <span class="section-num">1</span> Informations
+            </h4>
             <div class="form-group">
-              <label>Latitude</label>
-              <input v-model="form.latitude" type="number" step="any" placeholder="48.7937" />
+              <label>Titre <span class="required">*</span></label>
+              <input v-model="form.title" type="text" placeholder="Ex: Nid de poule rue Pasteur" />
             </div>
             <div class="form-group">
-              <label>Longitude</label>
-              <input v-model="form.longitude" type="number" step="any" placeholder="2.3647" />
+              <label>Description <span class="required">*</span></label>
+              <textarea v-model="form.description" rows="4" placeholder="Décrivez le problème en détail..."></textarea>
             </div>
           </div>
-          <div class="form-group">
-            <label>URL de l'image (optionnel)</label>
-            <input v-model="form.image_url" type="text" placeholder="https://..." />
+
+          <!-- Section 2 : Localisation -->
+          <div class="drawer-section">
+            <h4 class="drawer-section-title">
+              <span class="section-num">2</span> Localisation
+            </h4>
+
+            <!-- Onglets Adresse / Carte -->
+            <div class="location-tabs">
+              <button type="button" :class="['loc-tab', { active: locationMode === 'address' }]" @click="locationMode = 'address'">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                Adresse
+              </button>
+              <button type="button" :class="['loc-tab', { active: locationMode === 'map' }]" @click="locationMode = 'map'">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 13l4.553 2.276A1 1 0 0021 21.382V10.618a1 1 0 00-.553-.894L15 7m0 13V7m0 0L9 4"/></svg>
+                Choisir sur la carte
+              </button>
+            </div>
+
+            <!-- Mode adresse -->
+            <div v-if="locationMode === 'address'" class="address-search">
+              <div class="address-input-row">
+                <input v-model="addressQuery" type="text" placeholder="Ex: 12 rue Jean Jaurès" @keydown.enter.prevent="searchAddress" />
+                <button type="button" class="btn-search" @click="searchAddress" :disabled="addressLoading">
+                  <svg v-if="!addressLoading" xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+                  <span v-else class="spinner"></span>
+                </button>
+              </div>
+              <p v-if="addressError" class="location-hint location-hint--error">{{ addressError }}</p>
+              <p v-if="addressResult" class="location-hint location-hint--set">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                {{ addressResult }}
+              </p>
+            </div>
+
+            <!-- Mode carte -->
+            <div v-if="locationMode === 'map'">
+              <div ref="mapPickerContainer" class="map-picker"></div>
+              <p v-if="!form.latitude" class="location-hint">Cliquez sur la carte pour placer le signalement</p>
+              <p v-else class="location-hint location-hint--set">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                Position sélectionnée
+              </p>
+            </div>
+
+            <!-- Coordonnées (toujours visibles, readonly si remplies auto) -->
+            <div class="form-row" style="margin-top:0.75rem">
+              <div class="form-group">
+                <label style="font-size:0.72rem">Latitude</label>
+                <input v-model="form.latitude" type="number" step="any" placeholder="48.7937" :readonly="!!form.latitude && locationMode !== 'address'" :class="{ 'input-readonly': !!form.latitude && locationMode !== 'address' }" />
+              </div>
+              <div class="form-group">
+                <label style="font-size:0.72rem">Longitude</label>
+                <input v-model="form.longitude" type="number" step="any" placeholder="2.3647" :readonly="!!form.longitude && locationMode !== 'address'" :class="{ 'input-readonly': !!form.longitude && locationMode !== 'address' }" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 3 : Photo -->
+          <div class="drawer-section">
+            <h4 class="drawer-section-title">
+              <span class="section-num">3</span> Photo <span class="optional">(optionnel)</span>
+            </h4>
+            <div
+              class="drop-zone"
+              :class="{ 'drop-zone--active': isDragging }"
+              @dragover.prevent="isDragging = true"
+              @dragleave="isDragging = false"
+              @drop.prevent="onDrop"
+              @click="($refs.fileInput as HTMLInputElement).click()"
+            >
+              <input ref="fileInput" type="file" accept="image/*" style="display:none" @change="onFileChange" />
+              <template v-if="imagePreview">
+                <img :src="imagePreview" class="drop-preview" :alt="selectedFile?.name" />
+                <div class="drop-preview-info">
+                  <span class="drop-zone-filename">{{ selectedFile?.name }}</span>
+                  <button type="button" class="drop-zone-remove" @click.stop="removeFile">✕ Supprimer</button>
+                </div>
+              </template>
+              <template v-else>
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m-4-4l4-4 4 4"/></svg>
+                <span>Glisser-déposer ou <u>parcourir</u></span>
+              </template>
+            </div>
           </div>
 
           <p v-if="formError" class="form-error">{{ formError }}</p>
 
-          <div class="modal-actions">
-            <button type="button" class="btn-cancel" @click="showModal = false">Annuler</button>
-            <button type="submit" class="btn-submit">Envoyer</button>
+          <!-- Actions sticky en bas -->
+          <div class="drawer-actions">
+            <button type="button" class="btn-cancel" @click="closeDrawer">Annuler</button>
+            <button type="submit" class="btn-submit">Envoyer le signalement</button>
           </div>
+
         </form>
       </div>
-    </div>
+    </Transition>
 
   </div>
 </template>
@@ -472,54 +692,186 @@ async function submitReport() {
 .status-badge.green  { background-color: rgba(43, 158, 90, 0.1); color: #2b9e5a; }
 .status-badge.muted  { background-color: rgba(4, 44, 83, 0.07); color: var(--color-text-muted); }
 
-/* ── Modal ── */
-.modal-overlay {
+/* ── Drawer ── */
+.drawer-overlay {
   position: fixed;
   inset: 0;
-  background-color: rgba(4, 44, 83, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
+  background-color: rgba(4, 44, 83, 0.45);
+  z-index: 200;
 }
 
-.modal {
+.drawer {
+  position: fixed;
+  top: 68px;
+  right: 0;
+  bottom: 0;
+  width: 480px;
   background: #ffffff;
-  border-radius: 14px;
-  padding: 2rem;
-  width: 100%;
-  max-width: 500px;
-  box-shadow: 0 20px 60px rgba(4, 44, 83, 0.2);
-}
-
-.modal-header {
+  z-index: 201;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  box-shadow: -8px 0 40px rgba(4, 44, 83, 0.15);
+}
+
+.drawer-header {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 1.5rem;
+  padding: 1.75rem 1.75rem 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
 }
 
-.modal-header h3 {
+.drawer-title {
   font-family: var(--font-title);
-  font-size: 1.25rem;
+  font-size: 1.3rem;
   color: var(--color-primary);
+  margin-bottom: 0.15rem;
 }
 
-.modal-close {
+.drawer-subtitle {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.drawer-close {
   background: none;
   border: none;
-  font-size: 1rem;
   color: var(--color-text-muted);
   cursor: pointer;
   padding: 0.25rem;
+  border-radius: 6px;
+  transition: background-color 0.15s;
+  flex-shrink: 0;
 }
+.drawer-close:hover { background-color: rgba(4, 44, 83, 0.07); color: var(--color-primary); }
 
-.modal-form {
+.drawer-form {
+  flex: 1;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  padding-bottom: 0;
 }
 
+.drawer-section {
+  padding: 1.25rem 1.75rem;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.drawer-section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+.section-num {
+  width: 20px;
+  height: 20px;
+  background-color: var(--color-primary);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.optional {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.78rem;
+}
+
+.required { color: #e05a2b; margin-left: 1px; }
+
+/* Onglets localisation */
+.location-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1.5px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.loc-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+.loc-tab:first-child { border-right: 1.5px solid var(--color-border); }
+.loc-tab:hover { background-color: rgba(4, 44, 83, 0.04); }
+.loc-tab.active { background-color: var(--color-primary); color: #ffffff; }
+
+/* Recherche adresse */
+.address-search { display: flex; flex-direction: column; gap: 0.5rem; }
+
+.address-input-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.address-input-row input { flex: 1; }
+
+.btn-search {
+  width: 40px;
+  height: 40px;
+  background-color: var(--color-primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity 0.2s;
+}
+.btn-search:hover { opacity: 0.85; }
+.btn-search:disabled { opacity: 0.5; cursor: default; }
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Carte picker */
+.map-picker {
+  width: 100%;
+  height: 240px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1.5px solid var(--color-border);
+  cursor: crosshair;
+}
+
+/* Champs communs */
 .form-group {
   display: flex;
   flex-direction: column;
@@ -550,21 +902,76 @@ input, textarea {
   font-family: var(--font-body);
   resize: vertical;
 }
+input:focus, textarea:focus { border-color: var(--color-primary); }
 
-input:focus, textarea:focus {
+.input-readonly {
+  background-color: #f3f4f6 !important;
+  color: var(--color-text-muted) !important;
+  cursor: default;
+}
+
+.location-hint {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.location-hint--set   { color: #059669; font-weight: 500; }
+.location-hint--error { color: #dc2626; }
+
+/* Drop zone */
+.drop-zone {
+  border: 1.5px dashed var(--color-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+  background-color: var(--color-background);
+}
+.drop-zone:hover, .drop-zone--active {
   border-color: var(--color-primary);
+  background-color: rgba(4, 44, 83, 0.04);
 }
 
-.form-error {
-  font-size: 0.8rem;
-  color: #c0392b;
+.drop-zone-filename {
+  font-size: 0.85rem;
+  color: var(--color-text);
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.modal-actions {
+.drop-zone-remove {
+  background: none;
+  border: none;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+.drop-zone-remove:hover { color: #c0392b; }
+
+.form-error { font-size: 0.8rem; color: #c0392b; padding: 0 1.75rem; }
+
+/* Actions sticky */
+.drawer-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
-  margin-top: 0.5rem;
+  padding: 1.25rem 1.75rem;
+  border-top: 1px solid var(--color-border);
+  background: #ffffff;
+  flex-shrink: 0;
 }
 
 .btn-cancel {
@@ -588,6 +995,42 @@ input:focus, textarea:focus {
   cursor: pointer;
   transition: opacity 0.2s;
 }
-
 .btn-submit:hover { opacity: 0.85; }
+
+/* Transitions */
+.overlay-enter-active, .overlay-leave-active { transition: opacity 0.25s ease; }
+.overlay-enter-from, .overlay-leave-to { opacity: 0; }
+
+.drawer-enter-active, .drawer-leave-active { transition: transform 0.3s cubic-bezier(0.4,0,0.2,1); }
+.drawer-enter-from, .drawer-leave-to { transform: translateX(100%); }
+
+.drop-preview {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.drop-preview-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex: 1;
+  overflow: hidden;
+}
+
+.report-thumbnail-wrap {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.report-thumbnail {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 </style>

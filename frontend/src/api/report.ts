@@ -6,12 +6,22 @@ export function getReports() {
     })
 }
 
-export function createReport(data : { title: string, description: string, latitude: number, longitude: number, image_url: string}){
-    return apiFetch("/reports", {
-        method: "POST",
-        body: JSON.stringify(data)
+export function getMyReports() {
+    return apiFetch("/my-reports", {
+        method: "GET"
     })
 }
+
+export function createReport(formData: FormData) {
+    const token = localStorage.getItem('token')
+    return fetch('http://localhost:3000/reports', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+    }).then(r => r.json())
+}
+
+
 
 
 
