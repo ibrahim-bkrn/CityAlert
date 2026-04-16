@@ -246,7 +246,7 @@ app.get('/my-reports', authMiddleware, (req, res) => {
 
 app.get('/admin/reports', authMiddleware, roleMiddleware('admin'), (req, res) => {
   const status = req.query.status || 'pending';
-  db.query('SELECT * FROM reports WHERE status = ?', [status], (err, results) => {
+  db.query('SELECT r.*, u.nom, u.prenom FROM reports r JOIN users u ON r.user_id = u.id WHERE r.status = ?', [status], (err, results) => {
     if (err) {
       console.error('Error fetching reports by status:', err);
       return res.status(500).json({ error: 'Error fetching reports by status' });
@@ -294,8 +294,14 @@ app.get('/stats', authMiddleware, roleMiddleware('admin'), (req, res) => {
       return res.status(500).json({ error: 'Error fetching stats' });
     }
 
-    res.json({
-      totalReports: results[0].total
+    db.query('SELECT COUNT(*) as totalUsers FROM users', (err, userResults) => {
+      if (err) {
+        return res.status(500).json({ error: 'Error fetching user stats' });
+      }
+      res.json({
+        totalReports: results[0].total,
+        totalUsers: userResults[0].totalUsers
+      });
     });
   });
 });

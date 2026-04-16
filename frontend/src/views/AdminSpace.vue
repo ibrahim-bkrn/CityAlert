@@ -1,3 +1,116 @@
+<script setup lang="ts">
+import { ref, onMounted, computed } from 'vue';
+import { useRouter } from 'vue-router';
+
+const router = useRouter();
+
+const handleLogout = () => {
+  localStorage.removeItem('token');
+  router.push('/login');
+};
+import { 
+  getAdminReports, 
+  approveReport, 
+  rejectReport, 
+  resolveReport, 
+  getStats, 
+  getStatsStatus 
+} from '@/api/admin';
+
+const stats = ref({
+  totalReports: 0,
+  pendingCount: 0,
+  resolvedMonth: 0,
+  activeUsers: 89 // Hardcoded as not available in API
+});
+
+const reports = ref([]);
+const currentStatusFilter = ref('pending');
+const isLoading = ref(false);
+
+const fetchStats = async () => {
+  const totalStats = await getStats();
+  if (totalStats && !totalStats.error) {
+    stats.value.totalReports = totalStats.totalReports;
+    stats.value.activeUsers = totalStats.totalUsers;
+  }
+
+  const statusStats = await getStatsStatus();
+  if (Array.isArray(statusStats)) {
+    const pending = statusStats.find(s => s.status === 'pending');
+    stats.value.pendingCount = pending ? pending.count : 0;
+    
+    const resolved = statusStats.find(s => s.status === 'resolved');
+    stats.value.resolvedMonth = resolved ? resolved.count : 0;
+  }
+};
+
+const fetchReports = async (status: string) => {
+  isLoading.value = true;
+  currentStatusFilter.value = status;
+  const data = await getAdminReports(status);
+  if (data && data.reports) {
+    reports.value = data.reports;
+  }
+  isLoading.value = false;
+};
+
+const handleApprove = async (id: number) => {
+  const res = await approveReport(id);
+  if (res && !res.error) {
+    fetchReports(currentStatusFilter.value);
+    fetchStats();
+  }
+};
+
+const handleReject = async (id: number) => {
+  const res = await rejectReport(id);
+  if (res && !res.error) {
+    fetchReports(currentStatusFilter.value);
+    fetchStats();
+  }
+};
+
+const handleResolve = async (id: number) => {
+  const res = await resolveReport(id);
+  if (res && !res.error) {
+    fetchReports(currentStatusFilter.value);
+    fetchStats();
+  }
+};
+
+const formatDate = (dateStr: string) => {
+  if (!dateStr) return 'N/A';
+  const date = new Date(dateStr);
+  return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+const getStatusLabel = (status: string) => {
+  switch (status) {
+    case 'pending': return 'En attente';
+    case 'approved': return 'Approuvé';
+    case 'rejected': return 'Rejeté';
+    case 'resolved': return 'Résolu';
+    default: return status;
+  }
+};
+
+const getStatusClass = (status: string) => {
+  switch (status) {
+    case 'pending': return 'muted';
+    case 'approved': return 'orange';
+    case 'resolved': return 'green';
+    case 'rejected': return 'muted';
+    default: return 'muted';
+  }
+};
+
+onMounted(() => {
+  fetchStats();
+  fetchReports('pending');
+});
+</script>
+
 <template>
   <div class="admin-space">
 
@@ -9,26 +122,21 @@
       </div>
 
       <nav class="sidebar-nav">
-        <a href="#" class="nav-item active">
+        <a href="#" class="nav-item active" @click.prevent="fetchReports('pending')">
           <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           Vue d'ensemble
         </a>
-        <a href="#" class="nav-item">
+        <a href="#" class="nav-item" :class="{ active: currentStatusFilter === 'approved' }" @click.prevent="fetchReports('approved')">
           <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
-          Signalements
-          <span class="badge">12</span>
+          Approuvés
+        </a>
+        <a href="#" class="nav-item" :class="{ active: currentStatusFilter === 'resolved' }" @click.prevent="fetchReports('resolved')">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Résolus
         </a>
         <a href="#" class="nav-item">
           <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
           Utilisateurs
-        </a>
-        <a href="#" class="nav-item">
-          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-          Statistiques
-        </a>
-        <a href="#" class="nav-item">
-          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-          Paramètres
         </a>
       </nav>
 
@@ -63,8 +171,8 @@
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
             </div>
           </div>
-          <span class="stat-value">142</span>
-          <span class="stat-trend up">+18 ce mois</span>
+          <span class="stat-value">{{ stats.totalReports }}</span>
+          <span class="stat-trend up">+{{ stats.totalReports }} total</span>
         </div>
         <div class="stat-card">
           <div class="stat-header">
@@ -73,18 +181,18 @@
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
             </div>
           </div>
-          <span class="stat-value">12</span>
+          <span class="stat-value">{{ stats.pendingCount }}</span>
           <span class="stat-trend warn">À traiter</span>
         </div>
         <div class="stat-card">
           <div class="stat-header">
-            <span class="stat-label">Résolus ce mois</span>
+            <span class="stat-label">Résolus</span>
             <div class="stat-icon green">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
             </div>
           </div>
-          <span class="stat-value">34</span>
-          <span class="stat-trend up">+5 vs mois dernier</span>
+          <span class="stat-value">{{ stats.resolvedMonth }}</span>
+          <span class="stat-trend up">Total résolus</span>
         </div>
         <div class="stat-card">
           <div class="stat-header">
@@ -93,16 +201,21 @@
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
             </div>
           </div>
-          <span class="stat-value">89</span>
-          <span class="stat-trend up">+12 cette semaine</span>
+          <span class="stat-value">{{ stats.activeUsers }}</span>
+          <span class="stat-trend up">Estimation</span>
         </div>
       </div>
 
       <!-- Signalements récents -->
       <section class="section">
         <div class="section-header">
-          <h2 class="section-title">Signalements récents</h2>
-          <a href="#" class="see-all">Voir tout</a>
+          <h2 class="section-title">Signalements ({{ getStatusLabel(currentStatusFilter) }})</h2>
+          <div class="filter-tabs">
+            <button @click="fetchReports('pending')" :class="{ active: currentStatusFilter === 'pending' }">En attente</button>
+            <button @click="fetchReports('approved')" :class="{ active: currentStatusFilter === 'approved' }">Approuvés</button>
+            <button @click="fetchReports('resolved')" :class="{ active: currentStatusFilter === 'resolved' }">Résolus</button>
+            <button @click="fetchReports('rejected')" :class="{ active: currentStatusFilter === 'rejected' }">Rejetés</button>
+          </div>
         </div>
 
         <div class="table-wrapper">
@@ -117,46 +230,27 @@
                 <th>Action</th>
               </tr>
             </thead>
-            <tbody>
-              <tr>
-                <td class="td-title">Nid de poule</td>
-                <td class="td-loc">Rue de la République</td>
-                <td class="td-user">Ibrahim B.</td>
-                <td class="td-date">13 avr. 2026</td>
-                <td><span class="status-badge orange">En cours</span></td>
-                <td><button class="btn-action">Gérer</button></td>
+            <tbody v-if="!isLoading">
+              <tr v-for="report in reports" :key="report.id">
+                <td class="td-title">{{ report.title }}</td>
+                <td class="td-loc">{{ report.latitude }}, {{ report.longitude }}</td>
+                <td class="td-user">{{ report.prenom }} {{ report.nom }}</td>
+                <td class="td-date">{{ formatDate(report.created_at) }}</td>
+                <td><span class="status-badge" :class="getStatusClass(report.status)">{{ getStatusLabel(report.status) }}</span></td>
+                <td class="td-actions">
+                  <button v-if="report.status === 'pending'" class="btn-action approve" @click="handleApprove(report.id)">Approuver</button>
+                  <button v-if="report.status === 'pending'" class="btn-action reject" @click="handleReject(report.id)">Rejeter</button>
+                  <button v-if="report.status === 'approved'" class="btn-action resolve" @click="handleResolve(report.id)">Résoudre</button>
+                  <button v-if="report.status === 'resolved' || report.status === 'rejected'" class="btn-action" disabled>Aucune</button>
+                </td>
               </tr>
-              <tr>
-                <td class="td-title">Graffiti sur mur</td>
-                <td class="td-loc">Place de la Mairie</td>
-                <td class="td-user">Yasmine D.</td>
-                <td class="td-date">12 avr. 2026</td>
-                <td><span class="status-badge muted">En attente</span></td>
-                <td><button class="btn-action">Gérer</button></td>
+              <tr v-if="reports.length === 0">
+                <td colspan="6" style="text-align: center; padding: 2rem;">Aucun signalement trouvé.</td>
               </tr>
+            </tbody>
+            <tbody v-else>
               <tr>
-                <td class="td-title">Lampadaire hors service</td>
-                <td class="td-loc">Av. du Président Wilson</td>
-                <td class="td-user">Marc L.</td>
-                <td class="td-date">11 avr. 2026</td>
-                <td><span class="status-badge green">Résolu</span></td>
-                <td><button class="btn-action">Voir</button></td>
-              </tr>
-              <tr>
-                <td class="td-title">Dépôt sauvage</td>
-                <td class="td-loc">Parc Paul Hochart</td>
-                <td class="td-user">Fatima K.</td>
-                <td class="td-date">10 avr. 2026</td>
-                <td><span class="status-badge muted">En attente</span></td>
-                <td><button class="btn-action">Gérer</button></td>
-              </tr>
-              <tr>
-                <td class="td-title">Canalisations bouchées</td>
-                <td class="td-loc">Rue Pasteur</td>
-                <td class="td-user">Antoine R.</td>
-                <td class="td-date">9 avr. 2026</td>
-                <td><span class="status-badge orange">En cours</span></td>
-                <td><button class="btn-action">Gérer</button></td>
+                <td colspan="6" style="text-align: center; padding: 2rem;">Chargement...</td>
               </tr>
             </tbody>
           </table>
@@ -397,6 +491,62 @@
 
 .see-all:hover {
   text-decoration: underline;
+}
+
+.td-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.filter-tabs {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.filter-tabs button {
+  background-color: transparent;
+  border: 1.5px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.35rem 0.875rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.filter-tabs button.active {
+  background-color: var(--color-primary);
+  color: #ffffff;
+  border-color: var(--color-primary);
+}
+
+.btn-action.approve {
+  border-color: #2b9e5a;
+  color: #2b9e5a;
+}
+
+.btn-action.approve:hover {
+  background-color: rgba(43, 158, 90, 0.1);
+}
+
+.btn-action.reject {
+  border-color: #e05a2b;
+  color: #e05a2b;
+}
+
+.btn-action.reject:hover {
+  background-color: rgba(224, 90, 43, 0.1);
+}
+
+.btn-action.resolve {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.btn-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ── Table ── */
