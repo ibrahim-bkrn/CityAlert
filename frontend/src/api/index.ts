@@ -1,4 +1,4 @@
-const BASE_URL = 'http://localhost:3000'
+export const BASE_URL = 'http://localhost:3000'
 
 export async function apiFetch(endpoint: string, options : { method: string, body?: string } = {method: "GET"}) {
   try{
